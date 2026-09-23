@@ -1,0 +1,9 @@
+fun loop(n) {
+  if (n <= 0) {
+    print "done";
+    return;
+  }
+  loop(n - 1);
+}
+
+loop(100000);
