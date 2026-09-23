@@ -1,0 +1,25 @@
+class True {
+  ifThenElse(thenBranch, elseBranch) {
+    thenBranch();
+  }
+}
+
+class False {
+  ifThenElse(thenBranch, elseBranch) {
+    elseBranch();
+  }
+}
+
+var yes = True();
+var no = False();
+
+fun sayYes() {
+  print "condition was true";
+}
+
+fun sayNo() {
+  print "condition was false";
+}
+
+yes.ifThenElse(sayYes, sayNo); // prints "condition was true"
+no.ifThenElse(sayYes, sayNo);  // prints "condition was false"
