@@ -1,0 +1,43 @@
+class Circle {
+  init(radius) {
+    this.radius = radius;
+  }
+
+  area {
+    return 3.141592653 * this.radius * this.radius;
+  }
+}
+
+var circle = Circle(4);
+print circle.area; // Prints roughly "50.2655".
+
+// Zero-arg regular method still requires explicit call.
+class Thing {
+  normalMethod() {
+    return "called";
+  }
+}
+var t = Thing();
+print t.normalMethod();
+
+// Getter via inheritance.
+class Base {
+  greeting {
+    return "hello from base";
+  }
+}
+class Derived < Base {}
+print Derived().greeting;
+
+// Field still takes priority over a same-named method/getter if ever set directly.
+class HasField {
+  init() {
+    this.label = "a field";
+  }
+  label2 {
+    return "a getter";
+  }
+}
+var h = HasField();
+print h.label;
+print h.label2;
