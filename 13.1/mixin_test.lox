@@ -1,0 +1,64 @@
+class Loyal {
+  loyalty() {
+    return "always loyal";
+  }
+}
+
+class Friendly {
+  greet() {
+    return "hi there!";
+  }
+}
+
+class Animal {
+  speak() {
+    return "generic noise";
+  }
+}
+
+// Multiple mixins + a superclass together.
+class Dog < Animal with Loyal, Friendly {
+  speak() {
+    return "woof";
+  }
+}
+
+var d = Dog();
+print d.speak();     // own method wins -> "woof"
+print d.loyalty();    // from Loyal mixin
+print d.greet();      // from Friendly mixin
+
+// Own method beats mixin method of the same name.
+class Overrider with Loyal {
+  loyalty() {
+    return "my own loyalty";
+  }
+}
+print Overrider().loyalty();
+
+// First-listed mixin wins over a later one with the same method name.
+class HasA {
+  value() { return "A"; }
+}
+class HasB {
+  value() { return "B"; }
+}
+class Combo with HasA, HasB {}
+print Combo().value(); // expect "A"
+
+// Mixin method used without any superclass at all.
+class JustMixed with Friendly {}
+print JustMixed().greet();
+
+// Verify `this` inside a mixed-in method refers to the actual instance.
+class Describable {
+  describe() {
+    return "I am " + this.label;
+  }
+}
+class Widget with Describable {
+  init(label) {
+    this.label = label;
+  }
+}
+print Widget("gadget").describe();
