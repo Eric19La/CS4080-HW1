@@ -1,0 +1,47 @@
+// 3-level chain, middle class doesn't override -- inner() should skip
+// straight to the grandchild.
+class A {
+  greet() {
+    print "A before";
+    inner();
+    print "A after";
+  }
+}
+class B < A {}
+class C < B {
+  greet() {
+    print "C";
+    inner(); // nothing below C -- should do nothing
+  }
+}
+C().greet();
+
+print "---";
+
+// If the superclass never calls inner(), the subclass override is
+// completely unreachable.
+class Locked {
+  action() {
+    print "Locked's own behavior only.";
+  }
+}
+class TriesToOverride < Locked {
+  action() {
+    print "This should never print.";
+  }
+}
+TriesToOverride().action();
+
+print "---";
+
+// No override at all in the subclass -- inner() in the superclass
+// should just do nothing, no error.
+class OnlyBase {
+  run() {
+    print "base runs";
+    inner();
+    print "base finishes";
+  }
+}
+class NoOverride < OnlyBase {}
+NoOverride().run();
