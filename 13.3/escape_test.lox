@@ -1,0 +1,5 @@
+print "She said \"hello\" to me.";
+print "Line one\nLine two";
+print "Tab\there";
+print "Backslash: \\";
+print "No escapes here, just text.";
