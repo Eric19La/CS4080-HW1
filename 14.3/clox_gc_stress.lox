@@ -1,0 +1,17 @@
+class Box {
+  init(value) {
+    this.value = value;
+  }
+}
+
+var total = 0;
+for (var i = 0; i < 50000; i = i + 1) {
+  var s = "item-" + "x";       // temporary string, discarded each loop
+  var b = Box(s);              // temporary instance, discarded each loop
+  if (b.value == "item-x") {
+    total = total + 1;
+  }
+}
+
+print total;
+print "done";
