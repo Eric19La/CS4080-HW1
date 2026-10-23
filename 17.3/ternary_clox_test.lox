@@ -1,0 +1,7 @@
+print true ? 1 : 2;
+print false ? 1 : 2;
+print false ? 1 : true ? 2 : 3;        // right-associativity check
+print true ? "yes" : (1/0);            // short-circuit: untaken branch must not run
+var x = true ? 10 : 20;
+print x;
+print 1 + (true ? 2 : 3);              // nested inside another expression
