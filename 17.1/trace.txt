@@ -1,0 +1,47 @@
+Chapter 17, Challenge 1
+
+Expression: (-1 + 2) * 3 - -4
+
+Trace of parsePrecedence() / prefix / infix function calls:
+
+expression()
+  parsePrecedence(PREC_ASSIGNMENT)
+    grouping(true)              [prefix rule for '(']
+      expression()
+        parsePrecedence(PREC_ASSIGNMENT)
+          unary(true)            [prefix rule for '-']
+            parsePrecedence(PREC_UNARY) -> number(false) emits CONSTANT 1
+            emits OP_NEGATE
+          binary(true)           [infix rule for '+']
+            parsePrecedence(PREC_FACTOR) -> number(false) emits CONSTANT 2
+            emits OP_ADD
+      consume(')')
+    binary(true)                [infix rule for '*']
+      parsePrecedence(PREC_UNARY) -> number(false) emits CONSTANT 3
+      emits OP_MULTIPLY
+    binary(true)                [infix rule for '-']
+      parsePrecedence(PREC_FACTOR)
+        unary(false)             [prefix rule for this '-']
+          parsePrecedence(PREC_UNARY) -> number(false) emits CONSTANT 4
+          emits OP_NEGATE
+      emits OP_SUBTRACT
+
+Explanation:
+
+Every binary() call recurses into parsePrecedence(rule->precedence + 1)
+for its right-hand operand. The "+1" is what makes each operator
+left-associative, it stops an operator of the same precedence
+appearing to the right from being swallowed into this operand, so it
+gets handled by the enclosing loop instead.
+
+grouping() just calls expression() again, which starts a brand new
+parsePrecedence(PREC_ASSIGNMENT) for whatever is inside the
+parentheses, exactly as if that sub-expression were its own top-level
+expression.
+
+The resulting emitted bytecode order is:
+
+  CONSTANT 1, NEGATE, CONSTANT 2, ADD, CONSTANT 3, MULTIPLY,
+  CONSTANT 4, NEGATE, SUBTRACT
+
+which is the postfix form of ((-1 + 2) * 3) - (-4).
