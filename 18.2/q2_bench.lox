@@ -1,0 +1,9 @@
+var start = clock();
+var a = 1;
+var b = 2;
+var i = 0;
+while (i < 500000) {
+  var x = a != b and a != b and a != b and a != b and a != b and a != b and a != b and a != b and a != b and a != b and a != b;
+  i = i + 1;
+}
+print clock() - start;
