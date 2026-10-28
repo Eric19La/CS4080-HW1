@@ -1,0 +1,6 @@
+print "hello" + " " + "world";
+var s = "abc";
+print s;
+print s == "abc";
+print s == "abd";
+print "x" + "yz";

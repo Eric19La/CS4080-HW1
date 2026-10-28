@@ -1,0 +1,16 @@
+class Box {
+  init(value) {
+    this.value = value;
+  }
+}
+
+var total = 0;
+for (var i = 0; i < 20000; i = i + 1) {
+  var s = "prefix-" + "suffix";
+  var b = Box(s);
+  if (b.value == "prefix-suffix") {
+    total = total + 1;
+  }
+}
+print total;
+print "done";
