@@ -1,0 +1,16 @@
+class Wizard {
+  cast() {
+    print "spell";
+  }
+}
+print Wizard;
+var w = Wizard();
+print w;
+
+fun greet() {
+  print "hi";
+}
+print greet;
+
+print "Undefined variable test:";
+print notAThing;
