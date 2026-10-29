@@ -1,0 +1,21 @@
+class Point {
+  init(x, y, z, w) {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    this.w = w;
+  }
+}
+
+var p = Point(1, 2, 3, 4);
+var start = clock();
+var i = 0;
+while (i < 3000000) {
+  p.x = p.x + 1;
+  p.y = p.y + p.x;
+  p.z = p.z + p.y;
+  p.w = p.w + p.z;
+  i = i + 1;
+}
+print clock() - start;
+print p.w;
