@@ -1,0 +1,10 @@
+var g0 = 0;
+var g1 = 1;
+var g2 = 2;
+
+var sum = 0;
+sum = sum + g0 + g0 + g0 + g0;
+sum = sum + g1 + g1 + g1 + g1;
+sum = sum + g2 + g2 + g2 + g2;
+
+print sum;
