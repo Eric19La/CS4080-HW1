@@ -1,0 +1,18 @@
+fun describe(value) {
+  print str(value) + " (" + type(value) + ")";
+}
+
+class Point {
+  init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+
+describe(42);
+describe("hello");
+describe(true);
+describe(nil);
+describe(Point);
+describe(Point(3, 4));
+describe(describe);

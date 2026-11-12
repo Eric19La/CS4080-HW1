@@ -1,0 +1,28 @@
+fun playGame() {
+  var secret = floor(random() * 100) + 1;
+  print "I'm thinking of a number between 1 and 100.";
+
+  var guesses = 0;
+  while (true) {
+    print "Your guess?";
+    var line = readLine();
+    if (line == nil) {
+      print "Goodbye!";
+      return;
+    }
+
+    guesses = guesses + 1;
+    var guess = num(line);
+
+    if (guess == secret) {
+      print "You got it in " + str(guesses) + " guesses!";
+      return;
+    } else if (guess < secret) {
+      print "Too low.";
+    } else {
+      print "Too high.";
+    }
+  }
+}
+
+playGame();
