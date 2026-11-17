@@ -1,0 +1,45 @@
+// "Objects are a poor man's closure" -- a 2D vector "object" is just
+// a closure (the "dispatcher") that captures x/y and hands back
+// different behavior depending on what "message" (a string) it's
+// asked for. The constructor, accessors, and the add "method" are
+// all ordinary closures; no class/instance machinery is used at all.
+
+fun makeVector(x, y) {
+  fun dispatch(message) {
+    if (message == "x") return x;
+    if (message == "y") return y;
+    print "Unknown vector message: " + message;
+    return nil;
+  }
+  return dispatch;
+}
+
+// "Methods" are just functions that send the vector object a message.
+fun vecX(v) { return v("x"); }
+fun vecY(v) { return v("y"); }
+
+// The addition "method": reads both operands' x/y through their own
+// dispatchers, then builds a brand new vector closure to return.
+fun vecAdd(a, b) {
+  return makeVector(vecX(a) + vecX(b), vecY(a) + vecY(b));
+}
+
+fun printVector(v) {
+  print "(" + str(vecX(v)) + ", " + str(vecY(v)) + ")";
+}
+
+var v1 = makeVector(1, 2);
+var v2 = makeVector(3, 4);
+
+printVector(v1); // expect: (1, 2)
+printVector(v2); // expect: (3, 4)
+
+var v3 = vecAdd(v1, v2);
+printVector(v3); // expect: (4, 6)
+
+// v1/v2 are untouched -- vecAdd produced a genuinely new vector.
+printVector(v1); // expect: (1, 2)
+printVector(v2); // expect: (3, 4)
+
+// Chained addition works the same way any real "object" would.
+printVector(vecAdd(v3, makeVector(-4, -6))); // expect: (0, 0)
