@@ -1,0 +1,11 @@
+// Plain recursive calls, no closures anywhere -- exercises exactly
+// the path the optimization is meant to speed up: callValue()/call()
+// for a bare ObjFunction, never touching ObjClosure at all.
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+var start = clock();
+print fib(30);
+print clock() - start;

@@ -1,0 +1,1378 @@
+//> A Virtual Machine vm-c
+//> Types of Values include-stdarg
+#include <stdarg.h>
+//< Types of Values include-stdarg
+//> vm-include-stdio
+#include <stdio.h>
+//> Strings vm-include-string
+#include <string.h>
+//< Strings vm-include-string
+//> Calls and Functions vm-include-time
+#include <time.h>
+//< Calls and Functions vm-include-time
+
+//< vm-include-stdio
+#include "common.h"
+//> Scanning on Demand vm-include-compiler
+#include "compiler.h"
+//< Scanning on Demand vm-include-compiler
+//> vm-include-debug
+#include "debug.h"
+//< vm-include-debug
+//> Strings vm-include-object-memory
+#include "object.h"
+#include "memory.h"
+//< Strings vm-include-object-memory
+#include "vm.h"
+//> Challenge 24.3 include-math
+#include <math.h>
+//< Challenge 24.3 include-math
+//> Challenge 24.4 include-stdlib
+#include <stdlib.h>
+//< Challenge 24.4 include-stdlib
+
+VM vm; // [one]
+//> Challenge 24.3 runtime-error-forward-decl
+// Native functions now need to call this to report their own errors,
+// but it's defined further down in the file. Forward-declared so
+// clockNative/sqrtNative (placed here, above it, for symmetry with
+// where they used to live) can call it.
+static void runtimeError(const char* format, ...);
+//< Challenge 24.3 runtime-error-forward-decl
+//> Calls and Functions clock-native
+static bool clockNative(int argCount, Value* args, Value* result) { // Challenge 24.3
+  *result = NUMBER_VAL((double)clock() / CLOCKS_PER_SEC); // Challenge 24.3
+  return true; // Challenge 24.3
+}
+//< Calls and Functions clock-native
+//> Challenge 24.3 sqrt-native
+// The motivating example from the challenge itself: sqrt() lives in
+// the statically-typed world of C (a plain double in, double out),
+// but gets called from dynamically-typed Lox, where the argument
+// could be anything -- a string, nil, an instance. This is the native
+// system's only way to reject that instead of either crashing or
+// silently misbehaving (sqrt() of a non-double via some implicit
+// conversion C might otherwise attempt).
+static bool sqrtNative(int argCount, Value* args, Value* result) {
+  if (!IS_NUMBER(args[0])) {
+    runtimeError("Argument to 'sqrt' must be a number.");
+    return false;
+  }
+
+  double value = AS_NUMBER(args[0]);
+  if (value < 0) {
+    runtimeError("Argument to 'sqrt' must not be negative.");
+    return false;
+  }
+
+  *result = NUMBER_VAL(sqrt(value));
+  return true;
+}
+//< Challenge 24.3 sqrt-native
+//> Challenge 24.4 value-to-string
+
+static ObjString* functionToString(ObjFunction* function) {
+  if (function->name == NULL) {
+    return copyString("<script>", 8);
+  }
+  char buffer[256];
+  int length = snprintf(buffer, sizeof(buffer), "<fn %.*s>",
+                        function->name->length, function->name->chars);
+  return copyString(buffer, length);
+}
+
+// Renders any Lox value as a Lox string, matching the exact text
+// printValue()/printObject() would have put on stdout -- used by
+// str() to let Lox code build strings out of non-string values,
+// which `+` alone can't do (it only accepts two numbers or two
+// strings).
+static ObjString* valueToString(Value value) {
+  if (IS_BOOL(value)) {
+    return AS_BOOL(value) ? copyString("true", 4) : copyString("false", 5);
+  }
+  if (IS_NIL(value)) {
+    return copyString("nil", 3);
+  }
+  if (IS_NUMBER(value)) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%g", AS_NUMBER(value));
+    return copyString(buffer, length);
+  }
+  if (IS_STRING(value)) {
+    return AS_STRING(value);
+  }
+
+  switch (OBJ_TYPE(value)) {
+    case OBJ_BOUND_METHOD: {
+      // Challenge 25.1: method is a Value now, not always a closure.
+      Value method = AS_BOUND_METHOD(value)->method;
+      return functionToString(IS_CLOSURE(method) ? AS_CLOSURE(method)->function
+                                                   : AS_FUNCTION(method));
+    }
+    case OBJ_CLOSURE:
+      return functionToString(AS_CLOSURE(value)->function);
+    case OBJ_FUNCTION:
+      return functionToString(AS_FUNCTION(value));
+    case OBJ_CLASS:
+      return AS_CLASS(value)->name;
+    case OBJ_INSTANCE: {
+      ObjString* className = AS_INSTANCE(value)->klass->name;
+      char buffer[256];
+      int length = snprintf(buffer, sizeof(buffer), "%.*s instance",
+                            className->length, className->chars);
+      return copyString(buffer, length);
+    }
+    case OBJ_NATIVE:
+      return copyString("<native fn>", 11);
+    case OBJ_UPVALUE:
+      return copyString("upvalue", 7);
+    case OBJ_STRING:
+      return AS_STRING(value); // Unreachable: handled by IS_STRING() above.
+  }
+  return copyString("", 0); // Unreachable.
+}
+//< Challenge 24.4 value-to-string
+//> Challenge 24.4 more-natives
+static bool strNative(int argCount, Value* args, Value* result) {
+  *result = OBJ_VAL(valueToString(args[0]));
+  return true;
+}
+
+// No array/list type exists yet, so this only makes sense for
+// strings -- extending it once Lox has a collection type is the
+// obvious next step.
+static bool lenNative(int argCount, Value* args, Value* result) {
+  if (!IS_STRING(args[0])) {
+    runtimeError("Argument to 'len' must be a string.");
+    return false;
+  }
+  *result = NUMBER_VAL(AS_STRING(args[0])->length);
+  return true;
+}
+
+// Runtime type introspection -- Lox has no instanceof/typeof syntax
+// at all otherwise. Lumps closures/raw functions/bound methods/
+// natives together as "function", since from Lox code's perspective
+// they're all just "a thing you can call."
+static bool typeNative(int argCount, Value* args, Value* result) {
+  const char* name;
+  if (IS_NIL(args[0])) {
+    name = "nil";
+  } else if (IS_BOOL(args[0])) {
+    name = "boolean";
+  } else if (IS_NUMBER(args[0])) {
+    name = "number";
+  } else if (IS_STRING(args[0])) {
+    name = "string";
+  } else if (IS_CLASS(args[0])) {
+    name = "class";
+  } else if (IS_INSTANCE(args[0])) {
+    name = "instance";
+  } else {
+    name = "function";
+  }
+  *result = OBJ_VAL(copyString(name, (int)strlen(name)));
+  return true;
+}
+
+static bool absNative(int argCount, Value* args, Value* result) {
+  if (!IS_NUMBER(args[0])) {
+    runtimeError("Argument to 'abs' must be a number.");
+    return false;
+  }
+  double value = AS_NUMBER(args[0]);
+  *result = NUMBER_VAL(value < 0 ? -value : value);
+  return true;
+}
+
+static bool floorNative(int argCount, Value* args, Value* result) {
+  if (!IS_NUMBER(args[0])) {
+    runtimeError("Argument to 'floor' must be a number.");
+    return false;
+  }
+  *result = NUMBER_VAL(floor(AS_NUMBER(args[0])));
+  return true;
+}
+
+static bool powNative(int argCount, Value* args, Value* result) {
+  if (!IS_NUMBER(args[0]) || !IS_NUMBER(args[1])) {
+    runtimeError("Arguments to 'pow' must be numbers.");
+    return false;
+  }
+  *result = NUMBER_VAL(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+  return true;
+}
+
+// [0, 1) -- same range/convention as JS's Math.random() or Python's
+// random.random(). seeded once, in initVM(), via srand(time(NULL)).
+static bool randomNative(int argCount, Value* args, Value* result) {
+  *result = NUMBER_VAL((double)rand() / ((double)RAND_MAX + 1));
+  return true;
+}
+
+// Blocking read of one line from stdin, without its trailing
+// newline. nil at EOF, since nil is otherwise never a string --
+// a caller can tell "no more input" apart from an empty line ("").
+static bool readLineNative(int argCount, Value* args, Value* result) {
+  char buffer[1024];
+  if (!fgets(buffer, sizeof(buffer), stdin)) {
+    *result = NIL_VAL;
+    return true;
+  }
+  size_t length = strlen(buffer);
+  if (length > 0 && buffer[length - 1] == '\n') {
+    length--;
+  }
+  *result = OBJ_VAL(copyString(buffer, (int)length));
+  return true;
+}
+
+// str()'s counterpart: parses a string into a number. Exists mainly
+// to make readLine() actually usable for numeric input -- without
+// it, text read from the user is a dead end, since Lox has no other
+// way to turn a string into something arithmetic works on.
+static bool numNative(int argCount, Value* args, Value* result) {
+  if (!IS_STRING(args[0])) {
+    runtimeError("Argument to 'num' must be a string.");
+    return false;
+  }
+
+  ObjString* string = AS_STRING(args[0]);
+  char* end;
+  double value = strtod(string->chars, &end);
+  if (end == string->chars || *end != '\0') {
+    runtimeError("Argument to 'num' must be a valid number.");
+    return false;
+  }
+
+  *result = NUMBER_VAL(value);
+  return true;
+}
+//< Challenge 24.4 more-natives
+//> reset-stack
+static void resetStack() {
+  vm.stackTop = vm.stack;
+//> Calls and Functions reset-frame-count
+  vm.frameCount = 0;
+//< Calls and Functions reset-frame-count
+//> Closures init-open-upvalues
+  vm.openUpvalues = NULL;
+//< Closures init-open-upvalues
+}
+//< reset-stack
+//> Types of Values runtime-error
+static void runtimeError(const char* format, ...) {
+  va_list args;
+  va_start(args, format);
+  vfprintf(stderr, format, args);
+  va_end(args);
+  fputs("\n", stderr);
+
+/* Types of Values runtime-error < Calls and Functions runtime-error-temp
+  size_t instruction = vm.ip - vm.chunk->code - 1;
+  int line = vm.chunk->lines[instruction];
+*/
+/* Calls and Functions runtime-error-temp < Calls and Functions runtime-error-stack
+  CallFrame* frame = &vm.frames[vm.frameCount - 1];
+  size_t instruction = frame->ip - frame->function->chunk.code - 1;
+  int line = frame->function->chunk.lines[instruction];
+*/
+/* Types of Values runtime-error < Calls and Functions runtime-error-stack
+  fprintf(stderr, "[line %d] in script\n", line);
+*/
+//> Calls and Functions runtime-error-stack
+  for (int i = vm.frameCount - 1; i >= 0; i--) {
+    CallFrame* frame = &vm.frames[i];
+    // Challenge 25.1: frame->function is always set (bare function or
+    // closure alike), so this no longer needs frame->closure at all.
+    ObjFunction* function = frame->function;
+    size_t instruction = frame->ip - function->chunk.code - 1;
+//> Challenge 14.1 runtime-error-uses-getline
+    fprintf(stderr, "[line %d] in ", // [minus]
+            getLine(&function->chunk, (int)instruction));
+//< Challenge 14.1 runtime-error-uses-getline
+    if (function->name == NULL) {
+      fprintf(stderr, "script\n");
+    } else {
+//> Challenge 19.2 length-bounded-error
+      fprintf(stderr, "%.*s()\n", function->name->length, function->name->chars);
+//< Challenge 19.2 length-bounded-error
+    }
+  }
+
+//< Calls and Functions runtime-error-stack
+  resetStack();
+}
+//< Types of Values runtime-error
+//> Calls and Functions define-native
+static void defineNative(const char* name, NativeFn function, int arity) { // Challenge 24.2
+  push(OBJ_VAL(copyString(name, (int)strlen(name))));
+  push(OBJ_VAL(newNative(function, arity))); // Challenge 24.2
+  int slot = ensureGlobalSlot(AS_STRING(vm.stack[0])); // Challenge 21.2
+  vm.globals[slot].value = vm.stack[1];
+  vm.globals[slot].isDefined = true;
+  pop();
+  pop();
+}
+//< Calls and Functions define-native
+//> Challenge 21.2 ensure-global-slot
+int ensureGlobalSlot(ObjString* name) {
+  Value indexValue;
+  if (tableGet(&vm.globalNames, OBJ_VAL(name), &indexValue)) {
+    return (int)AS_NUMBER(indexValue);
+  }
+
+  // Mirrors addConstant()'s push/pop dance: growing vm.globals (and
+  // inserting into vm.globalNames) can allocate, which can trigger a
+  // GC -- and `name` isn't reachable from anywhere else yet if this is
+  // its first mention.
+  push(OBJ_VAL(name));
+
+  if (vm.globalCapacity < vm.globalCount + 1) {
+    int oldCapacity = vm.globalCapacity;
+    vm.globalCapacity = GROW_CAPACITY(oldCapacity);
+    vm.globals = GROW_ARRAY(Global, vm.globals, oldCapacity,
+                             vm.globalCapacity);
+  }
+
+  int index = vm.globalCount++;
+  vm.globals[index].value = NIL_VAL;
+  vm.globals[index].isDefined = false;
+  vm.globals[index].name = name;
+  vm.globals[index].isConst = false; // Challenge 22.3
+  tableSet(&vm.globalNames, OBJ_VAL(name), NUMBER_VAL(index));
+
+  pop();
+  return index;
+}
+//< Challenge 21.2 ensure-global-slot
+
+void initVM() {
+//> Challenge 24.4 seed-random
+  srand((unsigned int)time(NULL));
+//< Challenge 24.4 seed-random
+//> Challenge 15.3 alloc-initial-stack
+  vm.stack = GROW_ARRAY(Value, NULL, 0, STACK_MAX);
+  vm.stackCapacity = STACK_MAX;
+//< Challenge 15.3 alloc-initial-stack
+//> call-reset-stack
+  resetStack();
+//< call-reset-stack
+//> Strings init-objects-root
+  vm.objects = NULL;
+//< Strings init-objects-root
+//> Garbage Collection init-gc-fields
+  vm.bytesAllocated = 0;
+  vm.nextGC = 1024 * 1024;
+//< Garbage Collection init-gc-fields
+//> Garbage Collection init-gray-stack
+
+  vm.grayCount = 0;
+  vm.grayCapacity = 0;
+  vm.grayStack = NULL;
+//< Garbage Collection init-gray-stack
+//> Global Variables init-globals
+//> Challenge 21.2 init-globals-array
+
+  vm.globals = NULL;
+  vm.globalCount = 0;
+  vm.globalCapacity = 0;
+  initTable(&vm.globalNames);
+//< Challenge 21.2 init-globals-array
+//< Global Variables init-globals
+//> Hash Tables init-strings
+  initTable(&vm.strings);
+//< Hash Tables init-strings
+//> Methods and Initializers init-init-string
+
+//> null-init-string
+  vm.initString = NULL;
+//< null-init-string
+  vm.initString = copyString("init", 4);
+//< Methods and Initializers init-init-string
+//> Calls and Functions define-native-clock
+
+  defineNative("clock", clockNative, 0); // Challenge 24.2
+  defineNative("sqrt", sqrtNative, 1); // Challenge 24.3
+//> Challenge 24.4 define-more-natives
+  defineNative("str", strNative, 1);
+  defineNative("len", lenNative, 1);
+  defineNative("type", typeNative, 1);
+  defineNative("abs", absNative, 1);
+  defineNative("floor", floorNative, 1);
+  defineNative("pow", powNative, 2);
+  defineNative("random", randomNative, 0);
+  defineNative("readLine", readLineNative, 0);
+  defineNative("num", numNative, 1);
+//< Challenge 24.4 define-more-natives
+//< Calls and Functions define-native-clock
+}
+
+void freeVM() {
+//> Global Variables free-globals
+//> Challenge 21.2 free-globals-array
+  FREE_ARRAY(Global, vm.globals, vm.globalCapacity);
+  freeTable(&vm.globalNames);
+//< Challenge 21.2 free-globals-array
+//< Global Variables free-globals
+//> Hash Tables free-strings
+  freeTable(&vm.strings);
+//< Hash Tables free-strings
+//> Methods and Initializers clear-init-string
+  vm.initString = NULL;
+//< Methods and Initializers clear-init-string
+//> Strings call-free-objects
+  freeObjects();
+//< Strings call-free-objects
+//> Challenge 15.3 free-stack
+  FREE_ARRAY(Value, vm.stack, vm.stackCapacity);
+  vm.stack = NULL;
+//< Challenge 15.3 free-stack
+}
+//> Challenge 15.3 grow-stack
+// Doubles the stack's capacity. Since the stack may move in memory,
+// every existing raw pointer INTO it has to be fixed up afterward:
+// stackTop, every live CallFrame's `slots`, and every still-open
+// upvalue's `location` (upvalues point directly at a stack slot until
+// they're closed) -- miss any of these and you get a dangling pointer.
+static void growStack() {
+  Value* oldStack = vm.stack;
+
+  int oldCapacity = vm.stackCapacity;
+  vm.stackCapacity = GROW_CAPACITY(oldCapacity);
+  vm.stack = GROW_ARRAY(Value, vm.stack, oldCapacity, vm.stackCapacity);
+
+  if (vm.stack == oldStack) return; // Didn't move; nothing to fix up.
+
+  vm.stackTop = vm.stack + (vm.stackTop - oldStack);
+
+  for (int i = 0; i < vm.frameCount; i++) {
+    vm.frames[i].slots = vm.stack + (vm.frames[i].slots - oldStack);
+  }
+
+  for (ObjUpvalue* upvalue = vm.openUpvalues; upvalue != NULL;
+       upvalue = upvalue->next) {
+    upvalue->location = vm.stack + (upvalue->location - oldStack);
+  }
+}
+//< Challenge 15.3 grow-stack
+//> push
+void push(Value value) {
+//> Challenge 15.3 push-grows-stack
+  if (vm.stackTop - vm.stack >= vm.stackCapacity) {
+    growStack();
+  }
+//< Challenge 15.3 push-grows-stack
+  *vm.stackTop = value;
+  vm.stackTop++;
+}
+//< push
+//> pop
+Value pop() {
+  vm.stackTop--;
+  return *vm.stackTop;
+}
+//< pop
+//> Types of Values peek
+static Value peek(int distance) {
+  return vm.stackTop[-1 - distance];
+}
+//< Types of Values peek
+//> Calls and Functions call
+//> Challenge 25.1 call-function-and-closure
+// `closure` may be NULL -- the callee is a bare ObjFunction with no
+// upvalues, so there's no ObjClosure wrapping it at all. `function` is
+// always the real function to run either way.
+static bool call(ObjFunction* function, ObjClosure* closure, int argCount) {
+  if (argCount != function->arity) {
+    runtimeError("Expected %d arguments but got %d.",
+        function->arity, argCount);
+    return false;
+  }
+
+  if (vm.frameCount == FRAMES_MAX) {
+    runtimeError("Stack overflow.");
+    return false;
+  }
+
+  CallFrame* frame = &vm.frames[vm.frameCount++];
+  frame->function = function;
+  frame->closure = closure;
+  frame->ip = function->chunk.code;
+  frame->slots = vm.stackTop - argCount - 1;
+  return true;
+}
+
+// A callee Value that must be either an ObjClosure or a bare
+// ObjFunction (never anything else) -- used everywhere a method or
+// function constant is invoked, now that either representation is
+// possible.
+static bool callClosureOrFunction(Value callee, int argCount) {
+  if (IS_CLOSURE(callee)) {
+    ObjClosure* closure = AS_CLOSURE(callee);
+    return call(closure->function, closure, argCount);
+  }
+  return call(AS_FUNCTION(callee), NULL, argCount);
+}
+//< Challenge 25.1 call-function-and-closure
+//< Calls and Functions call
+//> Calls and Functions call-value
+static bool callValue(Value callee, int argCount) {
+  if (IS_OBJ(callee)) {
+    switch (OBJ_TYPE(callee)) {
+//> Methods and Initializers call-bound-method
+      case OBJ_BOUND_METHOD: {
+        ObjBoundMethod* bound = AS_BOUND_METHOD(callee);
+//> store-receiver
+        vm.stackTop[-argCount - 1] = bound->receiver;
+//< store-receiver
+        return callClosureOrFunction(bound->method, argCount); // Challenge 25.1
+      }
+//< Methods and Initializers call-bound-method
+//> Classes and Instances call-class
+      case OBJ_CLASS: {
+        ObjClass* klass = AS_CLASS(callee);
+        vm.stackTop[-argCount - 1] = OBJ_VAL(newInstance(klass));
+//> Methods and Initializers call-init
+        Value initializer;
+        if (tableGet(&klass->methods, OBJ_VAL(vm.initString), // Challenge 20.1
+                     &initializer)) {
+          return callClosureOrFunction(initializer, argCount); // Challenge 25.1
+//> no-init-arity-error
+        } else if (argCount != 0) {
+          runtimeError("Expected 0 arguments but got %d.",
+                       argCount);
+          return false;
+//< no-init-arity-error
+        }
+//< Methods and Initializers call-init
+        return true;
+      }
+//< Classes and Instances call-class
+//> Closures call-value-closure
+      case OBJ_CLOSURE: {
+        ObjClosure* closure = AS_CLOSURE(callee);
+        return call(closure->function, closure, argCount);
+      }
+//< Closures call-value-closure
+//> Challenge 25.1 call-value-function
+      case OBJ_FUNCTION: // [switch]
+        return call(AS_FUNCTION(callee), NULL, argCount);
+//< Challenge 25.1 call-value-function
+//> call-native
+      case OBJ_NATIVE: {
+//> Challenge 24.2 native-arity-check
+        // Without this, a native called with too few arguments would
+        // have `args` point at whatever happens to be below the top
+        // of the stack -- native code reading args[i] for an i that
+        // was never actually pushed reads uninitialized/stale stack
+        // memory instead of failing loudly.
+        ObjNative* native = (ObjNative*)AS_OBJ(callee);
+        if (argCount != native->arity) {
+          runtimeError("Expected %d arguments but got %d.",
+                       native->arity, argCount);
+          return false;
+        }
+//< Challenge 24.2 native-arity-check
+//> Challenge 24.3 native-call-checks-result
+        Value result;
+        bool ok = native->function(argCount, vm.stackTop - argCount, &result);
+        vm.stackTop -= argCount + 1;
+        if (!ok) {
+          // The native already called runtimeError() itself with a
+          // message specific to what went wrong -- nothing more to
+          // report here, just propagate the failure.
+          return false;
+        }
+        push(result);
+        return true;
+//< Challenge 24.3 native-call-checks-result
+      }
+//< call-native
+      default:
+        break; // Non-callable object type.
+    }
+  }
+  runtimeError("Can only call functions and classes.");
+  return false;
+}
+//< Calls and Functions call-value
+//> Methods and Initializers invoke-from-class
+static bool invokeFromClass(ObjClass* klass, ObjString* name,
+                            int argCount) {
+  Value method;
+  if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) { // Challenge 20.1
+    runtimeError("Undefined property '%.*s'.", name->length, name->chars); // Challenge 19.2
+    return false;
+  }
+  return callClosureOrFunction(method, argCount); // Challenge 25.1
+}
+//< Methods and Initializers invoke-from-class
+//> Methods and Initializers invoke
+static bool invoke(ObjString* name, int argCount) {
+  Value receiver = peek(argCount);
+//> invoke-check-type
+
+  if (!IS_INSTANCE(receiver)) {
+    runtimeError("Only instances have methods.");
+    return false;
+  }
+
+//< invoke-check-type
+  ObjInstance* instance = AS_INSTANCE(receiver);
+//> invoke-field
+
+  Value value;
+  if (tableGet(&instance->fields, OBJ_VAL(name), &value)) { // Challenge 20.1
+    vm.stackTop[-argCount - 1] = value;
+    return callValue(value, argCount);
+  }
+
+//< invoke-field
+  return invokeFromClass(instance->klass, name, argCount);
+}
+//< Methods and Initializers invoke
+//> Methods and Initializers bind-method
+static bool bindMethod(ObjClass* klass, ObjString* name) {
+  Value method;
+  if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) { // Challenge 20.1
+    runtimeError("Undefined property '%.*s'.", name->length, name->chars); // Challenge 19.2
+    return false;
+  }
+
+  ObjBoundMethod* bound = newBoundMethod(peek(0), method); // Challenge 25.1
+  pop();
+  push(OBJ_VAL(bound));
+  return true;
+}
+//< Methods and Initializers bind-method
+//> Closures capture-upvalue
+static ObjUpvalue* captureUpvalue(Value* local) {
+//> look-for-existing-upvalue
+  ObjUpvalue* prevUpvalue = NULL;
+  ObjUpvalue* upvalue = vm.openUpvalues;
+  while (upvalue != NULL && upvalue->location > local) {
+    prevUpvalue = upvalue;
+    upvalue = upvalue->next;
+  }
+
+  if (upvalue != NULL && upvalue->location == local) {
+    return upvalue;
+  }
+
+//< look-for-existing-upvalue
+  ObjUpvalue* createdUpvalue = newUpvalue(local);
+//> insert-upvalue-in-list
+  createdUpvalue->next = upvalue;
+
+  if (prevUpvalue == NULL) {
+    vm.openUpvalues = createdUpvalue;
+  } else {
+    prevUpvalue->next = createdUpvalue;
+  }
+
+//< insert-upvalue-in-list
+  return createdUpvalue;
+}
+//< Closures capture-upvalue
+//> Closures close-upvalues
+static void closeUpvalues(Value* last) {
+  while (vm.openUpvalues != NULL &&
+         vm.openUpvalues->location >= last) {
+    ObjUpvalue* upvalue = vm.openUpvalues;
+    upvalue->closed = *upvalue->location;
+    upvalue->location = &upvalue->closed;
+    vm.openUpvalues = upvalue->next;
+  }
+}
+//< Closures close-upvalues
+//> Methods and Initializers define-method
+static void defineMethod(ObjString* name) {
+  Value method = peek(0);
+  ObjClass* klass = AS_CLASS(peek(1));
+  tableSet(&klass->methods, OBJ_VAL(name), method); // Challenge 20.1
+  pop();
+}
+//< Methods and Initializers define-method
+//> Types of Values is-falsey
+static bool isFalsey(Value value) {
+  return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+}
+//< Types of Values is-falsey
+//> Strings concatenate
+static void concatenate() {
+/* Strings concatenate < Garbage Collection concatenate-peek
+  ObjString* b = AS_STRING(pop());
+  ObjString* a = AS_STRING(pop());
+*/
+//> Garbage Collection concatenate-peek
+  ObjString* b = AS_STRING(peek(0));
+  ObjString* a = AS_STRING(peek(1));
+//< Garbage Collection concatenate-peek
+
+  int length = a->length + b->length;
+  char* chars = ALLOCATE(char, length + 1);
+  memcpy(chars, a->chars, a->length);
+  memcpy(chars + a->length, b->chars, b->length);
+  chars[length] = '\0';
+
+  ObjString* result = takeString(chars, length);
+//> Garbage Collection concatenate-pop
+  pop();
+  pop();
+//< Garbage Collection concatenate-pop
+  push(OBJ_VAL(result));
+}
+//< Strings concatenate
+//> run
+static InterpretResult run() {
+//> Calls and Functions run
+  CallFrame* frame = &vm.frames[vm.frameCount - 1];
+//> Challenge 24.1 register-ip
+  // Keeps the instruction pointer in a (hopefully) native register
+  // instead of behind a pointer indirection through `frame` on every
+  // single READ_BYTE(). The cost: frame->ip is no longer kept current
+  // during normal execution, so it has to be explicitly written back
+  // (`frame->ip = ip`) before anything that reads a frame's ip while
+  // this one isn't "active" -- a call that might push a new frame or
+  // report a runtime error -- and reloaded (`ip = frame->ip`) after
+  // `frame` is reassigned to point at a different frame.
+  register uint8_t* ip = frame->ip;
+//< Challenge 24.1 register-ip
+
+/* A Virtual Machine run < Calls and Functions run
+#define READ_BYTE() (*vm.ip++)
+*/
+//> Challenge 24.1 read-byte-register
+#define READ_BYTE() (*ip++)
+//< Challenge 24.1 read-byte-register
+/* A Virtual Machine read-constant < Calls and Functions run
+#define READ_CONSTANT() (vm.chunk->constants.values[READ_BYTE()])
+*/
+
+/* Jumping Back and Forth read-short < Calls and Functions run
+#define READ_SHORT() \
+    (vm.ip += 2, (uint16_t)((vm.ip[-2] << 8) | vm.ip[-1]))
+*/
+//> Challenge 24.1 read-short-register
+#define READ_SHORT() \
+    (ip += 2, \
+    (uint16_t)((ip[-2] << 8) | ip[-1]))
+//< Challenge 24.1 read-short-register
+
+// Challenge 25.1: frame->function is always set, closure or not.
+#define READ_CONSTANT() \
+    (frame->function->chunk.constants.values[READ_BYTE()])
+
+//< Calls and Functions run
+//> Global Variables read-string
+#define READ_STRING() AS_STRING(READ_CONSTANT())
+//< Global Variables read-string
+/* A Virtual Machine binary-op < Types of Values binary-op
+#define BINARY_OP(op) \
+    do { \
+      double b = pop(); \
+      double a = pop(); \
+      push(a op b); \
+    } while (false)
+*/
+//> Types of Values binary-op
+//> Challenge 15.4 binary-op-in-place
+// Two operands consumed, one result produced -- net stack height drops
+// by exactly 1. Read both operands by indexing (no pop() calls), drop
+// the top slot once, then overwrite what's now the top slot (formerly
+// `a`) with the result, instead of pop()+pop()+push() (3 function
+// calls) each doing their own stackTop increment/decrement.
+#define BINARY_OP(valueType, op) \
+    do { \
+      if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) { \
+        frame->ip = ip; /* Challenge 24.1 */ \
+        runtimeError("Operands must be numbers."); \
+        return INTERPRET_RUNTIME_ERROR; \
+      } \
+      double b = AS_NUMBER(vm.stackTop[-1]); \
+      double a = AS_NUMBER(vm.stackTop[-2]); \
+      vm.stackTop--; \
+      vm.stackTop[-1] = valueType(a op b); \
+    } while (false)
+//< Challenge 15.4 binary-op-in-place
+//< Types of Values binary-op
+
+  for (;;) {
+//> trace-execution
+#ifdef DEBUG_TRACE_EXECUTION
+//> trace-stack
+    printf("          ");
+    for (Value* slot = vm.stack; slot < vm.stackTop; slot++) {
+      printf("[ ");
+      printValue(*slot);
+      printf(" ]");
+    }
+    printf("\n");
+//< trace-stack
+/* A Virtual Machine trace-execution < Calls and Functions trace-execution
+    disassembleInstruction(vm.chunk,
+                           (int)(vm.ip - vm.chunk->code));
+*/
+    // Challenge 25.1: frame->function is always set, closure or not.
+    disassembleInstruction(&frame->function->chunk,
+        (int)(ip - frame->function->chunk.code)); // Challenge 24.1: frame->ip is stale here
+#endif
+
+//< trace-execution
+    uint8_t instruction;
+    switch (instruction = READ_BYTE()) {
+//> op-constant
+      case OP_CONSTANT: {
+        Value constant = READ_CONSTANT();
+/* A Virtual Machine op-constant < A Virtual Machine push-constant
+        printValue(constant);
+        printf("\n");
+*/
+//> push-constant
+        push(constant);
+//< push-constant
+        break;
+      }
+//< op-constant
+//> Challenge 14.2 op-constant-long
+      case OP_CONSTANT_LONG: {
+        // Each READ_BYTE() call has the side effect of advancing
+        // frame->ip, so these must be sequenced into separate
+        // statements -- C does not guarantee evaluation order for
+        // multiple side-effecting calls combined in one expression.
+        uint8_t byte1 = READ_BYTE();
+        uint8_t byte2 = READ_BYTE();
+        uint8_t byte3 = READ_BYTE();
+        uint32_t index = ((uint32_t)byte1 << 16) |
+                         ((uint32_t)byte2 << 8) |
+                         (uint32_t)byte3;
+        Value constant = frame->function->chunk.constants.values[index]; // Challenge 25.1
+        push(constant);
+        break;
+      }
+//< Challenge 14.2 op-constant-long
+//> Types of Values interpret-literals
+      case OP_NIL: push(NIL_VAL); break;
+      case OP_TRUE: push(BOOL_VAL(true)); break;
+      case OP_FALSE: push(BOOL_VAL(false)); break;
+//< Types of Values interpret-literals
+//> Global Variables interpret-pop
+      case OP_POP: pop(); break;
+      case OP_DUP: push(peek(0)); break; // Challenge 23.1
+//< Global Variables interpret-pop
+//> Local Variables interpret-get-local
+      case OP_GET_LOCAL: {
+        uint8_t slot = READ_BYTE();
+/* Local Variables interpret-get-local < Calls and Functions push-local
+        push(vm.stack[slot]); // [slot]
+*/
+//> Calls and Functions push-local
+        push(frame->slots[slot]);
+//< Calls and Functions push-local
+        break;
+      }
+//< Local Variables interpret-get-local
+//> Local Variables interpret-set-local
+      case OP_SET_LOCAL: {
+        uint8_t slot = READ_BYTE();
+/* Local Variables interpret-set-local < Calls and Functions set-local
+        vm.stack[slot] = peek(0);
+*/
+//> Calls and Functions set-local
+        frame->slots[slot] = peek(0);
+//< Calls and Functions set-local
+        break;
+      }
+//< Local Variables interpret-set-local
+//> Challenge 22.4 interpret-local-long
+      // 24-bit-operand counterparts of OP_GET_LOCAL/OP_SET_LOCAL,
+      // used once a function has more than 256 locals in scope.
+      case OP_GET_LOCAL_LONG: {
+        uint8_t byte1 = READ_BYTE();
+        uint8_t byte2 = READ_BYTE();
+        uint8_t byte3 = READ_BYTE();
+        uint32_t slot = ((uint32_t)byte1 << 16) |
+                        ((uint32_t)byte2 << 8) |
+                        (uint32_t)byte3;
+        push(frame->slots[slot]);
+        break;
+      }
+      case OP_SET_LOCAL_LONG: {
+        uint8_t byte1 = READ_BYTE();
+        uint8_t byte2 = READ_BYTE();
+        uint8_t byte3 = READ_BYTE();
+        uint32_t slot = ((uint32_t)byte1 << 16) |
+                        ((uint32_t)byte2 << 8) |
+                        (uint32_t)byte3;
+        frame->slots[slot] = peek(0);
+        break;
+      }
+//< Challenge 22.4 interpret-local-long
+//> Global Variables interpret-get-global
+      // Challenge 21.2: operand is a direct slot index into
+      // vm.globals, not a constant-table index for the name -- no
+      // hashing, no string comparison, just array indexing.
+      case OP_GET_GLOBAL: {
+        uint8_t slot = READ_BYTE();
+        if (!vm.globals[slot].isDefined) {
+          ObjString* name = vm.globals[slot].name;
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Undefined variable '%.*s'.", name->length, name->chars);
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        push(vm.globals[slot].value);
+        break;
+      }
+//< Global Variables interpret-get-global
+//> Global Variables interpret-define-global
+      case OP_DEFINE_GLOBAL: {
+        uint8_t slot = READ_BYTE();
+        vm.globals[slot].value = peek(0);
+        vm.globals[slot].isDefined = true;
+        pop();
+        break;
+      }
+//< Global Variables interpret-define-global
+//> Global Variables interpret-set-global
+      case OP_SET_GLOBAL: {
+        uint8_t slot = READ_BYTE();
+        if (!vm.globals[slot].isDefined) {
+          ObjString* name = vm.globals[slot].name;
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Undefined variable '%.*s'.", name->length, name->chars);
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        vm.globals[slot].value = peek(0);
+        break;
+      }
+//< Global Variables interpret-set-global
+//> Closures interpret-get-upvalue
+      case OP_GET_UPVALUE: {
+        uint8_t slot = READ_BYTE();
+        push(*frame->closure->upvalues[slot]->location);
+        break;
+      }
+//< Closures interpret-get-upvalue
+//> Closures interpret-set-upvalue
+      case OP_SET_UPVALUE: {
+        uint8_t slot = READ_BYTE();
+        *frame->closure->upvalues[slot]->location = peek(0);
+        break;
+      }
+//< Closures interpret-set-upvalue
+//> Classes and Instances interpret-get-property
+      case OP_GET_PROPERTY: {
+//> get-not-instance
+        if (!IS_INSTANCE(peek(0))) {
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Only instances have properties.");
+          return INTERPRET_RUNTIME_ERROR;
+        }
+
+//< get-not-instance
+        ObjInstance* instance = AS_INSTANCE(peek(0));
+        ObjString* name = READ_STRING();
+
+        Value value;
+        if (tableGet(&instance->fields, OBJ_VAL(name), &value)) { // Challenge 20.1
+          pop(); // Instance.
+          push(value);
+          break;
+        }
+//> get-undefined
+
+//< get-undefined
+/* Classes and Instances get-undefined < Methods and Initializers get-method
+        runtimeError("Undefined property '%.*s'.", name->length, name->chars); // Challenge 19.2
+        return INTERPRET_RUNTIME_ERROR;
+*/
+//> Methods and Initializers get-method
+        frame->ip = ip; // Challenge 24.1: bindMethod() may runtimeError().
+        if (!bindMethod(instance->klass, name)) {
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        break;
+//< Methods and Initializers get-method
+      }
+//< Classes and Instances interpret-get-property
+//> Classes and Instances interpret-set-property
+      case OP_SET_PROPERTY: {
+//> set-not-instance
+        if (!IS_INSTANCE(peek(1))) {
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Only instances have fields.");
+          return INTERPRET_RUNTIME_ERROR;
+        }
+
+//< set-not-instance
+        ObjInstance* instance = AS_INSTANCE(peek(1));
+        tableSet(&instance->fields, OBJ_VAL(READ_STRING()), peek(0)); // Challenge 20.1
+        Value value = pop();
+        pop();
+        push(value);
+        break;
+      }
+//< Classes and Instances interpret-set-property
+//> Superclasses interpret-get-super
+      case OP_GET_SUPER: {
+        ObjString* name = READ_STRING();
+        ObjClass* superclass = AS_CLASS(pop());
+
+        frame->ip = ip; // Challenge 24.1: bindMethod() may runtimeError().
+        if (!bindMethod(superclass, name)) {
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        break;
+      }
+//< Superclasses interpret-get-super
+//> Types of Values interpret-equal
+      case OP_EQUAL: {
+//> Challenge 15.4 equal-in-place
+        Value b = vm.stackTop[-1];
+        Value a = vm.stackTop[-2];
+        vm.stackTop--;
+        vm.stackTop[-1] = BOOL_VAL(valuesEqual(a, b));
+//< Challenge 15.4 equal-in-place
+        break;
+      }
+//< Types of Values interpret-equal
+//> Types of Values interpret-comparison
+      case OP_GREATER:  BINARY_OP(BOOL_VAL, >); break;
+      case OP_LESS:     BINARY_OP(BOOL_VAL, <); break;
+//< Types of Values interpret-comparison
+/* A Virtual Machine op-binary < Types of Values op-arithmetic
+      case OP_ADD:      BINARY_OP(+); break;
+      case OP_SUBTRACT: BINARY_OP(-); break;
+      case OP_MULTIPLY: BINARY_OP(*); break;
+      case OP_DIVIDE:   BINARY_OP(/); break;
+*/
+/* A Virtual Machine op-negate < Types of Values op-negate
+      case OP_NEGATE:   push(-pop()); break;
+*/
+/* Types of Values op-arithmetic < Strings add-strings
+      case OP_ADD:      BINARY_OP(NUMBER_VAL, +); break;
+*/
+//> Strings add-strings
+      case OP_ADD: {
+        if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
+          concatenate();
+        } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
+          double b = AS_NUMBER(pop());
+          double a = AS_NUMBER(pop());
+          push(NUMBER_VAL(a + b));
+        } else {
+          frame->ip = ip; // Challenge 24.1
+          runtimeError(
+              "Operands must be two numbers or two strings.");
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        break;
+      }
+//< Strings add-strings
+//> Types of Values op-arithmetic
+      case OP_SUBTRACT: BINARY_OP(NUMBER_VAL, -); break;
+      case OP_MULTIPLY: BINARY_OP(NUMBER_VAL, *); break;
+      case OP_DIVIDE:   BINARY_OP(NUMBER_VAL, /); break;
+//< Types of Values op-arithmetic
+//> Types of Values op-not
+      case OP_NOT:
+//> Challenge 15.4 not-in-place
+        // Same reasoning as OP_NEGATE: pop one, push one -- net stack
+        // height is unchanged, so just overwrite the top slot.
+        vm.stackTop[-1] = BOOL_VAL(isFalsey(vm.stackTop[-1]));
+//< Challenge 15.4 not-in-place
+        break;
+//< Types of Values op-not
+//> Types of Values op-negate
+      case OP_NEGATE:
+        if (!IS_NUMBER(peek(0))) {
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Operand must be a number.");
+          return INTERPRET_RUNTIME_ERROR;
+        }
+//> Challenge 15.4 negate-in-place
+        // The stack ends up the same height either way (pop one
+        // number, push one number back) -- mutate the top slot
+        // directly instead of paying for a pop()+push() pair of
+        // stackTop decrement/increment/dereference.
+        vm.stackTop[-1] = NUMBER_VAL(-AS_NUMBER(vm.stackTop[-1]));
+//< Challenge 15.4 negate-in-place
+        break;
+//< Types of Values op-negate
+//> Global Variables interpret-print
+      case OP_PRINT: {
+        printValue(pop());
+        printf("\n");
+        break;
+      }
+//< Global Variables interpret-print
+//> Jumping Back and Forth op-jump
+      case OP_JUMP: {
+        uint16_t offset = READ_SHORT();
+/* Jumping Back and Forth op-jump < Calls and Functions jump
+        vm.ip += offset;
+*/
+//> Calls and Functions jump
+        ip += offset; // Challenge 24.1
+//< Calls and Functions jump
+        break;
+      }
+//< Jumping Back and Forth op-jump
+//> Jumping Back and Forth op-jump-if-false
+      case OP_JUMP_IF_FALSE: {
+        uint16_t offset = READ_SHORT();
+/* Jumping Back and Forth op-jump-if-false < Calls and Functions jump-if-false
+        if (isFalsey(peek(0))) vm.ip += offset;
+*/
+//> Calls and Functions jump-if-false
+        if (isFalsey(peek(0))) ip += offset; // Challenge 24.1
+//< Calls and Functions jump-if-false
+        break;
+      }
+//< Jumping Back and Forth op-jump-if-false
+//> Jumping Back and Forth op-loop
+      case OP_LOOP: {
+        uint16_t offset = READ_SHORT();
+/* Jumping Back and Forth op-loop < Calls and Functions loop
+        vm.ip -= offset;
+*/
+//> Calls and Functions loop
+        ip -= offset; // Challenge 24.1
+//< Calls and Functions loop
+        break;
+      }
+//< Jumping Back and Forth op-loop
+//> Calls and Functions interpret-call
+      case OP_CALL: {
+        int argCount = READ_BYTE();
+//> Challenge 24.1 sync-before-call
+        // callValue() may push a new frame (reads/writes
+        // vm.frames[...] directly, with no idea the "real" ip is
+        // sitting in this local) or fail and report a runtime error
+        // (whose stack trace reads every frame's .ip, including this
+        // one) -- either way, frame->ip has to be current first.
+        frame->ip = ip;
+//< Challenge 24.1 sync-before-call
+        if (!callValue(peek(argCount), argCount)) {
+          return INTERPRET_RUNTIME_ERROR;
+        }
+//> update-frame-after-call
+        frame = &vm.frames[vm.frameCount - 1];
+//> Challenge 24.1 reload-after-call
+        ip = frame->ip;
+//< Challenge 24.1 reload-after-call
+//< update-frame-after-call
+        break;
+      }
+//< Calls and Functions interpret-call
+//> Methods and Initializers interpret-invoke
+      case OP_INVOKE: {
+        ObjString* method = READ_STRING();
+        int argCount = READ_BYTE();
+        frame->ip = ip; // Challenge 24.1
+        if (!invoke(method, argCount)) {
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        frame = &vm.frames[vm.frameCount - 1];
+        ip = frame->ip; // Challenge 24.1
+        break;
+      }
+//< Methods and Initializers interpret-invoke
+//> Superclasses interpret-super-invoke
+      case OP_SUPER_INVOKE: {
+        ObjString* method = READ_STRING();
+        int argCount = READ_BYTE();
+        ObjClass* superclass = AS_CLASS(pop());
+        frame->ip = ip; // Challenge 24.1
+        if (!invokeFromClass(superclass, method, argCount)) {
+          return INTERPRET_RUNTIME_ERROR;
+        }
+        frame = &vm.frames[vm.frameCount - 1];
+        ip = frame->ip; // Challenge 24.1
+        break;
+      }
+//< Superclasses interpret-super-invoke
+//> Closures interpret-closure
+      case OP_CLOSURE: {
+        ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
+        ObjClosure* closure = newClosure(function);
+        push(OBJ_VAL(closure));
+//> interpret-capture-upvalues
+        for (int i = 0; i < closure->upvalueCount; i++) {
+          uint8_t isLocal = READ_BYTE();
+//> Challenge 22.4 read-upvalue-index-wide
+          uint8_t indexByte1 = READ_BYTE();
+          uint8_t indexByte2 = READ_BYTE();
+          uint8_t indexByte3 = READ_BYTE();
+          uint32_t index = ((uint32_t)indexByte1 << 16) |
+                           ((uint32_t)indexByte2 << 8) |
+                           (uint32_t)indexByte3;
+//< Challenge 22.4 read-upvalue-index-wide
+          if (isLocal) {
+            closure->upvalues[i] =
+                captureUpvalue(frame->slots + index);
+          } else {
+            closure->upvalues[i] = frame->closure->upvalues[index];
+          }
+        }
+//< interpret-capture-upvalues
+        break;
+      }
+//< Closures interpret-closure
+//> Closures interpret-close-upvalue
+      case OP_CLOSE_UPVALUE:
+        closeUpvalues(vm.stackTop - 1);
+        pop();
+        break;
+//< Closures interpret-close-upvalue
+      case OP_RETURN: {
+/* A Virtual Machine print-return < Global Variables op-return
+        printValue(pop());
+        printf("\n");
+*/
+/* Global Variables op-return < Calls and Functions interpret-return
+        // Exit interpreter.
+*/
+/* A Virtual Machine run < Calls and Functions interpret-return
+        return INTERPRET_OK;
+*/
+//> Calls and Functions interpret-return
+        Value result = pop();
+//> Closures return-close-upvalues
+        closeUpvalues(frame->slots);
+//< Closures return-close-upvalues
+        vm.frameCount--;
+        if (vm.frameCount == 0) {
+          pop();
+          return INTERPRET_OK;
+        }
+
+        vm.stackTop = frame->slots;
+        push(result);
+        frame = &vm.frames[vm.frameCount - 1];
+//> Challenge 24.1 reload-after-return
+        // The caller's frame->ip is already correct -- it was synced
+        // right before the OP_CALL/OP_INVOKE/OP_SUPER_INVOKE that
+        // pushed the frame we're discarding. Just pick it back up.
+        ip = frame->ip;
+//< Challenge 24.1 reload-after-return
+        break;
+//< Calls and Functions interpret-return
+      }
+//> Classes and Instances interpret-class
+      case OP_CLASS:
+        push(OBJ_VAL(newClass(READ_STRING())));
+        break;
+//< Classes and Instances interpret-class
+//> Superclasses interpret-inherit
+      case OP_INHERIT: {
+        Value superclass = peek(1);
+//> inherit-non-class
+        if (!IS_CLASS(superclass)) {
+          frame->ip = ip; // Challenge 24.1
+          runtimeError("Superclass must be a class.");
+          return INTERPRET_RUNTIME_ERROR;
+        }
+
+//< inherit-non-class
+        ObjClass* subclass = AS_CLASS(peek(0));
+        tableAddAll(&AS_CLASS(superclass)->methods,
+                    &subclass->methods);
+        pop(); // Subclass.
+        break;
+      }
+//< Superclasses interpret-inherit
+//> Methods and Initializers interpret-method
+      case OP_METHOD:
+        defineMethod(READ_STRING());
+        break;
+//< Methods and Initializers interpret-method
+    }
+  }
+
+#undef READ_BYTE
+//> Jumping Back and Forth undef-read-short
+#undef READ_SHORT
+//< Jumping Back and Forth undef-read-short
+//> undef-read-constant
+#undef READ_CONSTANT
+//< undef-read-constant
+//> Global Variables undef-read-string
+#undef READ_STRING
+//< Global Variables undef-read-string
+//> undef-binary-op
+#undef BINARY_OP
+//< undef-binary-op
+}
+//< run
+//> omit
+void hack(bool b) {
+  // Hack to avoid unused function error. run() is not used in the
+  // scanning chapter.
+  run();
+  if (b) hack(false);
+}
+//< omit
+//> interpret
+/* A Virtual Machine interpret < Scanning on Demand vm-interpret-c
+InterpretResult interpret(Chunk* chunk) {
+  vm.chunk = chunk;
+  vm.ip = vm.chunk->code;
+  return run();
+*/
+//> Scanning on Demand vm-interpret-c
+InterpretResult interpret(const char* source) {
+/* Scanning on Demand vm-interpret-c < Compiling Expressions interpret-chunk
+  compile(source);
+  return INTERPRET_OK;
+*/
+/* Compiling Expressions interpret-chunk < Calls and Functions interpret-stub
+  Chunk chunk;
+  initChunk(&chunk);
+
+  if (!compile(source, &chunk)) {
+    freeChunk(&chunk);
+    return INTERPRET_COMPILE_ERROR;
+  }
+
+  vm.chunk = &chunk;
+  vm.ip = vm.chunk->code;
+*/
+//> Calls and Functions interpret-stub
+  ObjFunction* function = compile(source);
+  if (function == NULL) return INTERPRET_COMPILE_ERROR;
+
+  push(OBJ_VAL(function));
+//< Calls and Functions interpret-stub
+/* Calls and Functions interpret-stub < Calls and Functions interpret
+  CallFrame* frame = &vm.frames[vm.frameCount++];
+  frame->function = function;
+  frame->ip = function->chunk.code;
+  frame->slots = vm.stack;
+*/
+/* Calls and Functions interpret < Closures interpret
+  call(function, 0);
+*/
+//> Closures interpret
+  // Challenge 25.1: the top-level script never captures anything from
+  // an enclosing scope (there isn't one), so it never needs wrapping
+  // either -- run it as a bare function, same as any other
+  // closure-free function.
+  call(function, NULL, 0);
+//< Closures interpret
+//< Scanning on Demand vm-interpret-c
+//> Compiling Expressions interpret-chunk
+
+/* Compiling Expressions interpret-chunk < Calls and Functions end-interpret
+  InterpretResult result = run();
+
+  freeChunk(&chunk);
+  return result;
+*/
+//> Calls and Functions end-interpret
+  return run();
+//< Calls and Functions end-interpret
+//< Compiling Expressions interpret-chunk
+}
+//< interpret

@@ -1,0 +1,115 @@
+// 1. Bare function, no upvalues at all.
+fun add(a, b) {
+  return a + b;
+}
+print add(2, 3); // expect: 5
+
+// 2. Closure capturing a local (isLocal upvalue).
+fun makeCounter() {
+  var count = 0;
+  fun counter() {
+    count = count + 1;
+    return count;
+  }
+  return counter;
+}
+var c1 = makeCounter();
+var c2 = makeCounter();
+print c1(); // expect: 1
+print c1(); // expect: 2
+print c2(); // expect: 1
+
+// 3. Nested closures capturing an upvalue of an enclosing closure
+// (not-local upvalue chain, two levels deep).
+fun outer() {
+  var x = "outside";
+  fun middle() {
+    fun inner() {
+      print x; // expect: outside
+    }
+    inner();
+  }
+  middle();
+}
+outer();
+
+// 4. Recursive bare function (no closure at all).
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+print fib(10); // expect: 55
+
+// 5. Class with a method that captures nothing -- should be a bare
+// ObjFunction stored in the method table, not an ObjClosure.
+class Greeter {
+  greet(name) {
+    return "Hello, " + name;
+  }
+}
+var g = Greeter();
+print g.greet("World"); // expect: Hello, World
+
+// 6. Bound method (unbound then called later) for a no-upvalue method.
+var bound = g.greet;
+print bound("Later"); // expect: Hello, Later
+
+// 7. Class with an init() that captures nothing.
+class Box {
+  init(value) {
+    this.value = value;
+  }
+  get() {
+    return this.value;
+  }
+}
+var b = Box(42);
+print b.get(); // expect: 42
+
+// 8. Mixing closures and classes: a method whose body happens to
+// define (but not escape) a local closure internally -- the method
+// itself still doesn't capture anything from an enclosing scope.
+class Repeater {
+  run(n) {
+    var total = 0;
+    fun add(x) {
+      total = total + x; // captures method-local `total`
+    }
+    for (var i = 0; i < n; i = i + 1) {
+      add(i);
+    }
+    return total;
+  }
+}
+print Repeater().run(5); // expect: 10
+
+// 9. Inheritance + super call where the overriding method is bare and
+// the superclass method is also bare.
+class Animal {
+  speak() {
+    return "...";
+  }
+}
+class Dog < Animal {
+  speak() {
+    return super.speak() + " Woof";
+  }
+}
+print Dog().speak(); // expect: ... Woof
+
+// 10. Stack trace / runtime error through a mix of bare-function and
+// closure frames, to confirm frame->function-based line reporting
+// still works everywhere.
+fun level3() {
+  return 1 / nil; // runtime error here
+}
+fun level2() {
+  return level3();
+}
+fun level1() {
+  fun wrapsLevel2() { // this one IS a closure (captures nothing though... )
+    return level2();
+  }
+  return wrapsLevel2();
+}
+level1();

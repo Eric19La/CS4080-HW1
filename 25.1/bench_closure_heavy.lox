@@ -1,0 +1,18 @@
+// Every call to makeAdder allocates a closure (one upvalue). This
+// stresses the ObjClosure-creation path, which is untouched by the
+// optimization (closures that need wrapping still get wrapped).
+fun makeAdder(x) {
+  fun adder(y) {
+    return x + y;
+  }
+  return adder;
+}
+
+var start = clock();
+var total = 0;
+for (var i = 0; i < 2000000; i = i + 1) {
+  var add = makeAdder(i);
+  total = total + add(1);
+}
+print total;
+print clock() - start;
