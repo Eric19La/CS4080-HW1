@@ -1,0 +1,102 @@
+// clox has no anonymous function expressions, so each closure here is
+// declared as a named local function and then assigned by name.
+
+// 1. The classic bug: each iteration's closure should see ITS OWN
+// value of i, not whatever i ends up being after the loop ends.
+var fn1;
+var fn2;
+var fn3;
+for (var i = 1; i <= 3; i = i + 1) {
+  fun capture() { print i; }
+  if (i == 1) fn1 = capture;
+  if (i == 2) fn2 = capture;
+  if (i == 3) fn3 = capture;
+}
+fn1(); // expect: 1
+fn2(); // expect: 2
+fn3(); // expect: 3
+
+// 2. Same idea, nested inside a function instead of top-level code.
+fun makeFns(n) {
+  var first; var second; var third;
+  for (var i = 0; i < n; i = i + 1) {
+    fun capture() { return i; }
+    if (i == 0) first = capture;
+    if (i == 1) second = capture;
+    if (i == 2) third = capture;
+  }
+  print first();  // expect: 0
+  print second(); // expect: 1
+  print third();  // expect: 2
+}
+makeFns(3);
+
+// 3. `continue` must not break the per-iteration freshness: a
+// continue'd iteration's closure should still see THAT iteration's
+// value, not get skipped/merged into the next one.
+fun makeFnsWithContinue() {
+  var a; var b; var c;
+  for (var i = 0; i < 5; i = i + 1) {
+    if (i == 1) continue; // skip storing anything this iteration
+    fun capture() { return i; }
+    if (i == 0) a = capture;
+    if (i == 2) b = capture;
+    if (i == 4) c = capture;
+  }
+  print a(); // expect: 0
+  print b(); // expect: 2
+  print c(); // expect: 4
+}
+makeFnsWithContinue();
+
+// 4. A `for` loop whose initializer MUTATES an existing outer
+// variable (not a new `var`) should still share that single variable
+// across iterations/closures -- no per-iteration freshness, since no
+// new binding was introduced by the loop.
+var shared = 0;
+var sharedFn1;
+var sharedFn2;
+for (shared = 1; shared <= 2; shared = shared + 1) {
+  fun readShared() { return shared; }
+  if (shared == 1) sharedFn1 = readShared;
+  if (shared == 2) sharedFn2 = readShared;
+}
+print sharedFn1(); // expect: 3 (loop's final increment, since shared aliases the one outer var)
+print sharedFn2(); // expect: 3
+
+// 5. A for-loop with a captured control variable but a nested
+// uncaptured local in the body -- make sure the OP_CLOSE_UPVALUE_KEEP
+// path doesn't interfere with the body's own normal scoping.
+var sum = 0;
+fun makeSumFns() {
+  var r1; var r2;
+  for (var i = 0; i < 3; i = i + 1) {
+    var doubled = i * 2; // ordinary body-local, unrelated to closures
+    sum = sum + doubled;
+    fun capture() { return i; }
+    if (i == 0) r1 = capture;
+    if (i == 2) r2 = capture;
+  }
+  print r1(); // expect: 0
+  print r2(); // expect: 2
+}
+makeSumFns();
+print sum; // expect: 6  (0 + 2 + 4)
+
+// 6. While loops are unaffected (no implicit control var) -- a local
+// declared fresh inside the while body each pass already behaves
+// correctly via ordinary scope-exit upvalue closing.
+fun makeWhileFns() {
+  var i = 0;
+  var w1; var w2;
+  while (i < 2) {
+    var local = i;
+    fun capture() { return local; }
+    if (i == 0) w1 = capture;
+    if (i == 1) w2 = capture;
+    i = i + 1;
+  }
+  print w1(); // expect: 0
+  print w2(); // expect: 1
+}
+makeWhileFns();
